@@ -1,0 +1,77 @@
+{
+  "server_name": {
+    "description": "房间名称",
+    "type": "string",
+    "hint": "大厅里显示的房间名，支持包含匹配。例如填「早八」就能匹配「早八的世界」。",
+    "obvious_hint": true,
+    "default": ""
+  },
+  "server_ip": {
+    "description": "服务器 IP（可选）",
+    "type": "string",
+    "hint": "云服务器公网 IP。房间名容易撞车时用来精确匹配。",
+    "default": ""
+  },
+  "server_port": {
+    "description": "服务器端口（可选）",
+    "type": "int",
+    "hint": "专用服务器 Master 端口，不是 Steam 查询端口。填 0 表示不按端口过滤。",
+    "default": 0
+  },
+  "region": {
+    "description": "大厅地区",
+    "type": "string",
+    "hint": "不确定就选 auto，插件会依次查询常见地区。",
+    "default": "ap-east-1",
+    "options": [
+      "auto",
+      "ap-east-1",
+      "ap-southeast-1",
+      "us-east-1",
+      "eu-central-1"
+    ]
+  },
+  "platform": {
+    "description": "平台",
+    "type": "string",
+    "hint": "Steam 联机选 Steam；WeGame / 腾讯选 Rail。",
+    "default": "Steam",
+    "options": ["Steam", "Rail"]
+  },
+  "klei_token": {
+    "description": "Klei Token（cluster_token.txt）",
+    "type": "string",
+    "secret": true,
+    "hint": "云服务器集群目录里的 cluster_token.txt 全文。不填也能查人数和季节，但看不到谁进谁出、KU_ID。详见 README。",
+    "obvious_hint": true,
+    "default": ""
+  },
+  "poll_interval": {
+    "description": "轮询间隔（秒）",
+    "type": "int",
+    "hint": "太短可能请求大厅很慢。建议 30～90，最小按 15 秒处理。",
+    "default": 45
+  },
+  "offline_threshold": {
+    "description": "连续找不到几次算离线",
+    "type": "int",
+    "hint": "大厅刷新偶尔会漏房间，连续几次找不到才判定离线，避免误报。",
+    "default": 3
+  },
+  "http_proxy": {
+    "description": "HTTP 代理（可选）",
+    "type": "string",
+    "hint": "访问 Klei 大厅很慢或失败时填写，例如 http://127.0.0.1:7890",
+    "default": ""
+  },
+  "notify_join_leave": {
+    "description": "推送玩家进出",
+    "type": "bool",
+    "default": true
+  },
+  "notify_online_offline": {
+    "description": "推送服务器上线/离开大厅",
+    "type": "bool",
+    "default": true
+  }
+}
