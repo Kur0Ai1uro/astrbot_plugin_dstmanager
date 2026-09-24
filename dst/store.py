@@ -306,6 +306,11 @@ class PluginStore:
                     return row
         return None
 
+    def list_players(self) -> list[dict[str, Any]]:
+        rows = list(self.players.values())
+        rows.sort(key=lambda row: str(row.get("last_seen") or ""), reverse=True)
+        return rows
+
     def search_players(self, keyword: str) -> list[dict[str, Any]]:
         q = keyword.strip().lower()
         if not q:

@@ -36,7 +36,8 @@ def page_hint(command: str, keyword: str, page: int, pages: int, total: int) -> 
     if total == 0 or pages <= 1:
         return ""
     nxt = page + 1 if page < pages else 1
-    return f"第 **{page}/{pages}** 页，共 {total} 条。下一页：`/{command} {keyword} {nxt}`"
+    target = f"/{command} {nxt}" if not keyword else f"/{command} {keyword} {nxt}"
+    return f"第 **{page}/{pages}** 页，共 {total} 条。下一页：`{target}`"
 
 
 def _load_list(path: Path) -> list[dict[str, Any]]:

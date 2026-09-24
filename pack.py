@@ -16,6 +16,7 @@ INCLUDE_FILES = [
     "requirements.txt",
     "LICENSE",
     "README.md",
+    "CHANGELOG.md",
     "data/items.json",
     "data/commands.json",
     "dst/__init__.py",

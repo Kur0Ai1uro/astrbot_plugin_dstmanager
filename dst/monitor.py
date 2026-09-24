@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -35,6 +36,8 @@ class ServerMonitor:
         self.last_error = ""
         self.last_server: LobbyServer | None = None
         self.last_token_warning = ""
+        self.last_ok_at = 0.0
+        self.last_extra_matches = 0
 
     async def poll(self, config: dict[str, Any], client: LobbyClient) -> list[str]:
         name = str(config.get("server_name") or "").strip()
@@ -61,6 +64,7 @@ class ServerMonitor:
             self.last_error = "大厅里没找到匹配的房间。请核对房间名、地区和平台。"
             return self._after_poll(messages)
 
+        self.last_extra_matches = max(0, len(matched) - 1)
         if len(matched) > 1:
             logger.info(
                 f"匹配到 {len(matched)} 个房间，使用「{matched[0].name}」。"
@@ -90,7 +94,13 @@ class ServerMonitor:
         elif server.players:
             await self.store.record_players(server.players, joined=None)
         self.last_error = ""
+        self.last_ok_at = time.monotonic()
         return self._after_poll(messages)
+
+    def snapshot_fresh(self, interval: float) -> bool:
+        if not self.last_server or not self.snapshot.found or not self.last_ok_at:
+            return False
+        return time.monotonic() - self.last_ok_at <= interval
 
     def _after_poll(self, messages: list[str]) -> list[str]:
         if not self._ready:
@@ -306,32 +316,13 @@ def format_status(
     return "\n".join(lines)
 
 
-def format_online(server: LobbyServer | None, token_warning: str = "") -> str:
-    if not server:
-        return "**在线玩家**\n还没有查到服务器。"
-    if token_warning and not server.real_players:
-        return f"**在线玩家**\n{md_escape(token_warning)}"
-    if not server.real_players:
-        return (
-            f"**{md_escape(server.name)}** · {server.player_count}/{server.max_connections or '?'}\n"
-            "当前没有在线玩家"
-        )
-    lines = [
-        f"**{md_escape(server.name)}** · {server.player_count}/{server.max_connections or '?'}",
-    ]
-    table = format_player_table(server.real_players)
-    if table:
-        lines.append("")
-        lines.append(table)
-    return "\n".join(lines)
-
-
 def format_player_rows(
-    rows: list[dict[str, Any]], keyword: str, start: int = 1
+    rows: list[dict[str, Any]], keyword: str, start: int = 1, *, listing: bool = False
 ) -> str:
-    title = f"**玩家检索** · `{md_escape(keyword)}`"
+    title = "**玩家列表**" if listing else f"**玩家检索** · `{md_escape(keyword)}`"
     if not rows:
-        return f"{title}\n没有找到，进过服后才会留下记录。"
+        empty = "进过服后才会留下记录。" if listing else "没有找到，进过服后才会留下记录。"
+        return f"{title}\n{empty}"
     table_rows: list[list[str]] = []
     for i, row in enumerate(rows, start):
         names = row.get("names") or [row.get("name")]

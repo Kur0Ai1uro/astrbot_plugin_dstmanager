@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import gzip
 import json
 import re
@@ -10,6 +11,8 @@ from typing import Any
 
 import aiohttp
 from astrbot.api import logger
+
+_NETWORK_ERRORS = (aiohttp.ClientError, asyncio.TimeoutError, TimeoutError)
 
 REGIONS = ("ap-east-1", "ap-southeast-1", "us-east-1", "eu-central-1")
 LIST_URL = "https://lobby-v2-cdn.klei.com/{region}-{platform}.json.gz"
@@ -116,20 +119,33 @@ class LobbyClient:
 
     async def _session_get(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            timeout = aiohttp.ClientTimeout(total=30)
+            timeout = aiohttp.ClientTimeout(
+                total=90, connect=20, sock_connect=20, sock_read=60
+            )
             self._session = aiohttp.ClientSession(timeout=timeout)
         return self._session
 
     async def fetch_list(self, region: str, platform: str) -> list[LobbyServer]:
         url = LIST_URL.format(region=region, platform=platform)
-        session = await self._session_get()
-        try:
-            async with session.get(url, proxy=self._proxy) as resp:
-                if resp.status != 200:
-                    raise LobbyError(f"大厅列表 HTTP {resp.status}（{region}）")
-                raw = await resp.read()
-        except aiohttp.ClientError as exc:
-            raise LobbyError(f"大厅列表请求失败：{exc}") from exc
+        raw: bytes | None = None
+        last_exc: BaseException | None = None
+        for attempt in range(2):
+            session = await self._session_get()
+            try:
+                async with session.get(url, proxy=self._proxy) as resp:
+                    if resp.status != 200:
+                        raise LobbyError(f"大厅列表 HTTP {resp.status}（{region}）")
+                    raw = await resp.read()
+                break
+            except _NETWORK_ERRORS as exc:
+                last_exc = exc
+                await self.close()
+                if attempt == 0:
+                    logger.warning(f"大厅列表超时或请求失败，将重试一次：{exc}")
+                    continue
+                raise LobbyError(f"大厅列表超时或请求失败：{exc}") from exc
+        if raw is None:
+            raise LobbyError(f"大厅列表超时或请求失败：{last_exc}") from last_exc
 
         text = _decode_maybe_gzip(raw)
         try:
@@ -150,7 +166,6 @@ class LobbyClient:
     async def fetch_details(
         self, region: str, row_id: str, token: str
     ) -> dict[str, Any]:
-        session = await self._session_get()
         url = DETAIL_URL.format(region=region)
         payloads = [
             {
@@ -166,6 +181,7 @@ class LobbyClient:
         ]
         last_error = "未知错误"
         for payload in payloads:
+            session = await self._session_get()
             try:
                 async with session.post(
                     url,
@@ -178,8 +194,15 @@ class LobbyClient:
                         last_error = f"大厅详情 HTTP {resp.status}"
                         continue
                     data = json.loads(text)
-            except (aiohttp.ClientError, json.JSONDecodeError) as exc:
+            except (
+                aiohttp.ClientError,
+                asyncio.TimeoutError,
+                TimeoutError,
+                json.JSONDecodeError,
+            ) as exc:
                 last_error = str(exc)
+                if isinstance(exc, _NETWORK_ERRORS):
+                    await self.close()
                 continue
 
             if isinstance(data, dict) and data.get("error"):

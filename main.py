@@ -1,5 +1,6 @@
 import asyncio
 import re
+import time
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
@@ -11,7 +12,6 @@ try:
         ServerMonitor,
         format_commands,
         format_items,
-        format_online,
         format_player_rows,
         format_status,
     )
@@ -23,7 +23,6 @@ except ImportError:  # AstrBot 把插件当包加载时
         ServerMonitor,
         format_commands,
         format_items,
-        format_online,
         format_player_rows,
         format_status,
     )
@@ -60,9 +59,9 @@ HELP_MARKDOWN = """**饥荒助手** · `/指令 参数`
 | 指令 | 说明 |
 | --- | --- |
 | `/饥荒帮助` | 本说明 |
-| `/饥荒状态` | 房间状态 |
-| `/饥荒在线` | 当前玩家 |
-| `/饥荒玩家 <关键词>` | 本服历史 / KU_ID，下一页加页码 |
+| `/饥荒状态` | 房间状态与当前在线 |
+| `/饥荒玩家` | 全部历史玩家，翻页 `/饥荒玩家 2` |
+| `/饥荒玩家 <关键词>` | 检索本服历史 / KU_ID |
 | `/饥荒新玩家 <昵称> <KU_ID>` | 补全 KU 对照 |
 | `/饥荒物品 <关键词>` | 物品 prefab，下一页加页码 |
 | `/饥荒指令 <关键词>` | 控制台用法（模糊检索，不执行） |
@@ -82,7 +81,7 @@ HELP_MARKDOWN = """**饥荒助手** · `/指令 参数`
     "astrbot_plugin_dst",
     "yourname",
     "饥荒联机版助手：大厅监测、玩家进出推送、物品/玩家/指令检索",
-    "1.0.12",
+    "1.1.0",
 )
 class Main(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -154,6 +153,9 @@ class Main(Star):
         ip = str(self.config.get("server_ip") or "").strip()
         if not name and not ip:
             return None, 0, "请先在 AstrBot 插件配置里填写房间名（或 IP）。"
+        interval = max(15, int(self.config.get("poll_interval") or 45))
+        if self.monitor.snapshot_fresh(interval):
+            return self.monitor.last_server, self.monitor.last_extra_matches, ""
         client = await self._ensure_client()
         try:
             matched, region = await client.find_servers(
@@ -181,6 +183,8 @@ class Main(Star):
         elif not token:
             self.monitor.last_token_warning = "未配置 Token，无法显示玩家详情。见 README「如何获取 Token」。"
         self.monitor.last_server = server
+        self.monitor.last_extra_matches = max(0, len(matched) - 1)
+        self.monitor.last_ok_at = time.monotonic()
         if server.players:
             await self.store.record_players(server.players, joined=None)
         return server, max(0, len(matched) - 1), ""
@@ -214,13 +218,13 @@ class Main(Star):
     def dst(self):
         """饥荒联机版助手：状态、在线、玩家、物品、指令、订阅"""
 
-    @filter.command("饥荒状态", alias={"dst状态"})
+    @filter.command("饥荒状态", alias={"dst状态", "饥荒在线", "dst在线"})
     async def cmd_status_alias(self, event: AstrMessageEvent):
         """查看饥荒服务器当前状态"""
         async for result in self.cmd_status(event):
             yield result
 
-    @dst.command("状态", alias={"status"})
+    @dst.command("状态", alias={"status", "在线", "online"})
     async def cmd_status(self, event: AstrMessageEvent):
         """查看房间名、人数、季节和在线玩家"""
         server, extra, error = await self._fresh_server()
@@ -234,21 +238,6 @@ class Main(Star):
             ),
         )
 
-    @filter.command("饥荒在线", alias={"dst在线"})
-    async def cmd_online_alias(self, event: AstrMessageEvent):
-        """查看当前在线玩家"""
-        async for result in self.cmd_online(event):
-            yield result
-
-    @dst.command("在线", alias={"online"})
-    async def cmd_online(self, event: AstrMessageEvent):
-        """只看当前在线玩家和 ID"""
-        server, _, error = await self._fresh_server()
-        if error and not server:
-            yield self._md(event, f"**在线玩家**\n{error}")
-            return
-        yield self._md(event, format_online(server, self.monitor.last_token_warning))
-
     @filter.command("饥荒玩家", alias={"dst玩家"})
     async def cmd_player_alias(self, event: AstrMessageEvent, keyword: str = ""):
         """检索本服历史玩家 ID"""
@@ -257,30 +246,18 @@ class Main(Star):
 
     @dst.command("玩家", alias={"player"})
     async def cmd_player(self, event: AstrMessageEvent, keyword: str = ""):
-        """按昵称 / KU_ID 查本服历史玩家"""
+        """按昵称 / KU_ID 查本服历史玩家；不带关键词则列出全部"""
         kw = self._rest_keyword(event, keyword)
         if not kw:
-            yield self._md(
-                event,
-                "**用法**\n\n"
-                "| 指令 | 说明 |\n"
-                "| --- | --- |\n"
-                "| `/饥荒玩家 <昵称或KU_ID>` | 下一页加页码 |",
-            )
-            return
-        query, page = split_keyword_page(kw)
-        if not query:
-            yield self._md(
-                event,
-                "**用法**\n\n"
-                "| 指令 |\n"
-                "| --- |\n"
-                "| `/饥荒玩家 <昵称或KU_ID>` |",
-            )
-            return
-        page_rows, page, pages, total = paginate(self.store.search_players(query), page)
+            query, page = "", 1
+        elif kw.isdigit() and int(kw) >= 1:
+            query, page = "", int(kw)
+        else:
+            query, page = split_keyword_page(kw)
+        source = self.store.list_players() if not query else self.store.search_players(query)
+        page_rows, page, pages, total = paginate(source, page)
         start = (page - 1) * PAGE_SIZE + 1
-        text = format_player_rows(page_rows, query, start=start)
+        text = format_player_rows(page_rows, query, start=start, listing=not query)
         hint = page_hint("饥荒玩家", query, page, pages, total)
         yield self._md(event, f"{text}\n\n{hint}" if hint else text)
 
@@ -334,7 +311,7 @@ class Main(Star):
         if status == "updated" and result["old_ku"]:
             extra = f"\n\n原对照：`{result['old_ku']}`"
         elif status == "added":
-            extra = "\n\n下次进出和 `/饥荒在线` 会显示这个 KU_。"
+            extra = "\n\n下次进出和 `/饥荒状态` 会显示这个 KU_。"
         yield self._md(event, f"{title}\n\n{table}{extra}")
 
     @filter.command("饥荒物品", alias={"dst物品"})
