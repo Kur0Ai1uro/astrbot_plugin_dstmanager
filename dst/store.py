@@ -23,6 +23,18 @@ def _now_iso() -> str:
     return datetime.now(TZ_SHANGHAI).isoformat(timespec="seconds")
 
 
+def _shown_in_history(row: dict[str, Any]) -> bool:
+    """只展示真正进过服的人。KU_test / 未进服的测试录入不算。"""
+    userid = str(row.get("userid") or "").strip()
+    if userid.upper() == "KU_TEST":
+        return False
+    names = [str(row.get("name") or ""), *(row.get("names") or [])]
+    dummy_name = any(str(name).strip().lower() == "test" for name in names)
+    if dummy_name and not str(row.get("prefab") or "").strip():
+        return False
+    return int(row.get("join_count") or 0) > 0
+
+
 def format_local_time(value: str) -> str:
     text = (value or "").strip()
     if not text:
@@ -307,7 +319,7 @@ class PluginStore:
         return None
 
     def list_players(self) -> list[dict[str, Any]]:
-        rows = list(self.players.values())
+        rows = [row for row in self.players.values() if _shown_in_history(row)]
         rows.sort(key=lambda row: str(row.get("last_seen") or ""), reverse=True)
         return rows
 
@@ -317,6 +329,8 @@ class PluginStore:
             return []
         scored: list[tuple[int, dict[str, Any]]] = []
         for row in self.players.values():
+            if not _shown_in_history(row):
+                continue
             blob = " ".join(
                 [
                     str(row.get("name") or ""),

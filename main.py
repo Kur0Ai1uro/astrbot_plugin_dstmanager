@@ -15,7 +15,16 @@ try:
         format_player_rows,
         format_status,
     )
-    from dst.search import PAGE_SIZE, LocalCatalog, page_hint, paginate, split_keyword_page
+    from dst.search import (
+        PAGE_SIZE,
+        CliError,
+        LocalCatalog,
+        page_hint,
+        page_overflow_text,
+        paginate,
+        parse_bind_args,
+        parse_search_args,
+    )
     from dst.store import PluginStore
 except ImportError:  # AstrBot 把插件当包加载时
     from .dst.lobby import LobbyClient, LobbyError, apply_details
@@ -26,7 +35,16 @@ except ImportError:  # AstrBot 把插件当包加载时
         format_player_rows,
         format_status,
     )
-    from .dst.search import PAGE_SIZE, LocalCatalog, page_hint, paginate, split_keyword_page
+    from .dst.search import (
+        PAGE_SIZE,
+        CliError,
+        LocalCatalog,
+        page_hint,
+        page_overflow_text,
+        paginate,
+        parse_bind_args,
+        parse_search_args,
+    )
     from .dst.store import PluginStore
 
 _PREFIXES = ("/饥荒", "饥荒", "/dst", "dst")
@@ -60,11 +78,11 @@ HELP_MARKDOWN = """**饥荒助手** · `/指令 参数`
 | --- | --- |
 | `/饥荒帮助` | 本说明 |
 | `/饥荒状态` | 房间状态与当前在线 |
-| `/饥荒玩家` | 全部历史玩家，翻页 `/饥荒玩家 2` |
-| `/饥荒玩家 <关键词>` | 检索本服历史 / KU_ID |
-| `/饥荒新玩家 <昵称> <KU_ID>` | 补全 KU 对照 |
-| `/饥荒物品 <关键词>` | 物品 prefab，下一页加页码 |
-| `/饥荒指令 <关键词>` | 控制台用法（模糊检索，不执行） |
+| `/饥荒玩家` | 全部历史。翻页：`/饥荒玩家 -p 2` |
+| `/饥荒玩家 张三` | 检索。名字含空格或数字时加引号：`/饥荒玩家 "张三 2"` |
+| `/饥荒新玩家 昵称 KU_` | 补全对照。空格昵称加引号 |
+| `/饥荒物品 金块` | 物品 prefab。翻页：`/饥荒物品 金块 -p 2` |
+| `/饥荒指令 封禁` | 控制台用法（不执行）。翻页：`/饥荒指令 封禁 -p 2` |
 
 **管理**（仅管理员）
 
@@ -81,7 +99,7 @@ HELP_MARKDOWN = """**饥荒助手** · `/指令 参数`
     "astrbot_plugin_dst",
     "yourname",
     "饥荒联机版助手：大厅监测、玩家进出推送、物品/玩家/指令检索",
-    "1.1.0",
+    "1.2.0",
 )
 class Main(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -248,13 +266,16 @@ class Main(Star):
     async def cmd_player(self, event: AstrMessageEvent, keyword: str = ""):
         """按昵称 / KU_ID 查本服历史玩家；不带关键词则列出全部"""
         kw = self._rest_keyword(event, keyword)
-        if not kw:
-            query, page = "", 1
-        elif kw.isdigit() and int(kw) >= 1:
-            query, page = "", int(kw)
-        else:
-            query, page = split_keyword_page(kw)
+        try:
+            query, page = parse_search_args(kw)
+        except CliError as exc:
+            yield self._md(event, f"**参数错误**\n\n{exc}")
+            return
         source = self.store.list_players() if not query else self.store.search_players(query)
+        pages = max(1, (len(source) + PAGE_SIZE - 1) // PAGE_SIZE) if source else 1
+        if page > pages:
+            yield self._md(event, page_overflow_text("饥荒玩家", query, page, pages))
+            return
         page_rows, page, pages, total = paginate(source, page)
         start = (page - 1) * PAGE_SIZE + 1
         text = format_player_rows(page_rows, query, start=start, listing=not query)
@@ -277,14 +298,21 @@ class Main(Star):
         raw = self._rest_keyword(event)
         if not raw:
             raw = f"{name} {ku}".strip()
-        nickname, userid = self._parse_name_ku(raw)
+        try:
+            nickname, userid = parse_bind_args(raw)
+        except CliError as exc:
+            yield self._md(event, f"**参数错误**\n\n{exc}")
+            return
+        if not nickname or not userid:
+            nickname, userid = self._parse_name_ku(raw)
         if not nickname or not userid:
             yield self._md(
                 event,
                 "**用法**\n\n"
-                "| 指令 | 示例 |\n"
+                "| 参数 | 示例 |\n"
                 "| --- | --- |\n"
-                "| `/饥荒新玩家 <昵称> <KU_ID>` | `/饥荒新玩家 张三 KU_xxxxxxxx` |\n\n"
+                "| 昵称 KU_ | `/饥荒新玩家 张三 KU_xxxxxxxx` |\n"
+                "| 有空格 | `/饥荒新玩家 \"张三 2\" KU_xxxxxxxx` |\n\n"
                 "昵称要和游戏里完全一致。",
             )
             return
@@ -324,26 +352,27 @@ class Main(Star):
     async def cmd_item(self, event: AstrMessageEvent, keyword: str = ""):
         """中文 / 英文 / prefab 互查物品 ID"""
         kw = self._rest_keyword(event, keyword)
-        if not kw:
-            yield self._md(
-                event,
-                "**用法**\n\n"
-                "| 指令 | 示例 |\n"
-                "| --- | --- |\n"
-                "| `/饥荒物品 <关键词>` | `/饥荒物品 金块` |",
-            )
+        try:
+            query, page = parse_search_args(kw)
+        except CliError as exc:
+            yield self._md(event, f"**参数错误**\n\n{exc}")
             return
-        query, page = split_keyword_page(kw)
         if not query:
             yield self._md(
                 event,
                 "**用法**\n\n"
-                "| 指令 |\n"
-                "| --- |\n"
-                "| `/饥荒物品 <关键词>` |",
+                "| 参数 | 示例 |\n"
+                "| --- | --- |\n"
+                "| 关键词 | `/饥荒物品 金块` |\n"
+                "| 翻页 | `/饥荒物品 金块 -p 2` |",
             )
             return
-        page_rows, page, pages, total = paginate(self.catalog.search_items(query), page)
+        source = self.catalog.search_items(query)
+        pages = max(1, (len(source) + PAGE_SIZE - 1) // PAGE_SIZE) if source else 1
+        if page > pages:
+            yield self._md(event, page_overflow_text("饥荒物品", query, page, pages))
+            return
+        page_rows, page, pages, total = paginate(source, page)
         start = (page - 1) * PAGE_SIZE + 1
         text = format_items(page_rows, query, start=start)
         hint = page_hint("饥荒物品", query, page, pages, total)
@@ -359,26 +388,27 @@ class Main(Star):
     async def cmd_command(self, event: AstrMessageEvent, keyword: str = ""):
         """检索饥荒控制台指令用法（不会代为执行）"""
         kw = self._rest_keyword(event, keyword)
-        if not kw:
-            yield self._md(
-                event,
-                "**用法**\n\n"
-                "| 指令 | 示例 |\n"
-                "| --- | --- |\n"
-                "| `/饥荒指令 <关键词>` | `/饥荒指令 封禁` |",
-            )
+        try:
+            query, page = parse_search_args(kw)
+        except CliError as exc:
+            yield self._md(event, f"**参数错误**\n\n{exc}")
             return
-        query, page = split_keyword_page(kw)
         if not query:
             yield self._md(
                 event,
                 "**用法**\n\n"
-                "| 指令 |\n"
-                "| --- |\n"
-                "| `/饥荒指令 <关键词>` |",
+                "| 参数 | 示例 |\n"
+                "| --- | --- |\n"
+                "| 关键词 | `/饥荒指令 封禁` |\n"
+                "| 翻页 | `/饥荒指令 封禁 -p 2` |",
             )
             return
-        page_rows, page, pages, total = paginate(self.catalog.search_commands(query), page)
+        source = self.catalog.search_commands(query)
+        pages = max(1, (len(source) + PAGE_SIZE - 1) // PAGE_SIZE) if source else 1
+        if page > pages:
+            yield self._md(event, page_overflow_text("饥荒指令", query, page, pages))
+            return
+        page_rows, page, pages, total = paginate(source, page)
         start = (page - 1) * PAGE_SIZE + 1
         text = format_commands(page_rows, query, start=start)
         hint = page_hint("饥荒指令", query, page, pages, total)

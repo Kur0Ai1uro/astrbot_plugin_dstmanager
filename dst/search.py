@@ -14,12 +14,177 @@ COMMANDS_PATH = PLUGIN_DIR / "data" / "commands.json"
 PAGE_SIZE = 5
 
 
-def split_keyword_page(text: str) -> tuple[str, int]:
-    raw = (text or "").strip()
-    parts = raw.rsplit(None, 1)
-    if len(parts) == 2 and parts[1].isdigit() and int(parts[1]) >= 1:
-        return parts[0], int(parts[1])
-    return raw, 1
+class CliError(ValueError):
+    """指令参数写错。"""
+
+
+_QUERY_FLAGS = ("--query", "--查", "-查", "-q")
+_PAGE_FLAGS = ("--page", "--页", "-页", "-p")
+_NAME_FLAGS = ("--name", "--名", "-名", "-n")
+_KU_FLAGS = ("--ku", "--id", "-ku", "-id")
+
+
+def _tokenize(text: str) -> list[tuple[str, bool]]:
+    """返回 (文本, 是否由引号括起)。引号内的数字不会被当成页码。"""
+    raw = (
+        (text or "")
+        .replace("“", '"')
+        .replace("”", '"')
+        .replace("‘", "'")
+        .replace("’", "'")
+    )
+    tokens: list[tuple[str, bool]] = []
+    index = 0
+    length = len(raw)
+    while index < length:
+        while index < length and raw[index].isspace():
+            index += 1
+        if index >= length:
+            break
+        if raw[index] in {'"', "'"}:
+            quote = raw[index]
+            index += 1
+            start = index
+            while index < length and raw[index] != quote:
+                index += 1
+            if index >= length:
+                raise CliError("引号没有成对。")
+            tokens.append((raw[start:index], True))
+            index += 1
+            continue
+        start = index
+        while index < length and not raw[index].isspace():
+            index += 1
+        tokens.append((raw[start:index], False))
+    return tokens
+
+
+_PAGE_NUMBER = re.compile(r"[1-9][0-9]*")
+
+
+def _flag_forms(token: str, flag: str) -> list[str]:
+    if flag.isascii():
+        return [token.lower()]
+    return [token]
+
+
+def _take_flag(token: str, flags: tuple[str, ...], *, page: bool = False):
+    for flag in flags:
+        for form in _flag_forms(token, flag):
+            if form == flag:
+                return flag, None
+            if form.startswith(flag + "="):
+                return flag, form[len(flag) + 1 :]
+            if (
+                page
+                and form.startswith(flag)
+                and _PAGE_NUMBER.fullmatch(form[len(flag) :])
+            ):
+                return flag, form[len(flag) :]
+    return None, None
+
+
+def _token_text(token: str | tuple[str, bool]) -> str:
+    return token[0] if isinstance(token, tuple) else token
+
+
+def _next_value(tokens: list, index: int, flag: str) -> str:
+    if index + 1 >= len(tokens):
+        raise CliError(f"`{flag}` 后面要跟值。")
+    value = _token_text(tokens[index + 1])
+    if value.startswith("-"):
+        raise CliError(f"`{flag}` 后面要跟值。")
+    return value
+
+
+def _parse_page(value: str) -> int:
+    if not _PAGE_NUMBER.fullmatch(value or ""):
+        raise CliError(f"页码必须是大于 0 的半角整数，且不能有前导零：`{value}`。")
+    return int(value)
+
+
+def parse_search_args(text: str) -> tuple[str, int]:
+    """返回 (查询内容, 页码)。引号外最后一个半角整数是页码，引号内原样保留。"""
+    tokens = _tokenize(text)
+    query: list[str] = []
+    quoted: list[bool] = []
+    page = 1
+    seen_page = False
+    seen_query = False
+    index = 0
+    while index < len(tokens):
+        token, was_quoted = tokens[index]
+        flag, inline = _take_flag(token, _QUERY_FLAGS)
+        if flag:
+            value = inline if inline is not None else _next_value(tokens, index, flag)
+            if inline is None:
+                index += 1
+            if seen_query:
+                raise CliError("`-查` 只能写一次。")
+            seen_query = True
+            query = [value]
+            quoted = [True]
+            index += 1
+            continue
+        flag, inline = _take_flag(token, _PAGE_FLAGS, page=True)
+        if flag:
+            value = inline if inline is not None else _next_value(tokens, index, flag)
+            if inline is None:
+                index += 1
+            page = _parse_page(value)
+            seen_page = True
+            index += 1
+            continue
+        if token.startswith("-"):
+            raise CliError(f"未知参数：`{token}`。翻页请用 `-p`。")
+        query.append(token)
+        quoted.append(was_quoted)
+        index += 1
+    if (
+        not seen_page
+        and not seen_query
+        and query
+        and not quoted[-1]
+        and _PAGE_NUMBER.fullmatch(query[-1])
+    ):
+        page = int(query.pop())
+    return " ".join(part for part in query if part).strip(), page
+
+
+def parse_bind_args(text: str) -> tuple[str, str]:
+    """返回 (昵称, KU_)。`-名` 与 `-ku`；否则昵称在前，KU_ 在最后。引号内空格会保留。"""
+    tokens = [token for token, _quoted in _tokenize(text)]
+    if not any(token.startswith("-") for token in tokens):
+        if len(tokens) < 2:
+            return "", ""
+        if re.fullmatch(r"KU_[A-Za-z0-9]+", tokens[-1], re.I):
+            return " ".join(tokens[:-1]).strip(), tokens[-1]
+        if re.fullmatch(r"KU_[A-Za-z0-9]+", tokens[0], re.I):
+            return " ".join(tokens[1:]).strip(), tokens[0]
+        return "", ""
+    name = ""
+    ku = ""
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        flag, inline = _take_flag(token, _NAME_FLAGS)
+        if flag:
+            value = inline if inline is not None else _next_value(tokens, index, flag)
+            if inline is None:
+                index += 1
+            name = value.strip()
+            index += 1
+            continue
+        flag, inline = _take_flag(token, _KU_FLAGS)
+        if flag:
+            value = inline if inline is not None else _next_value(tokens, index, flag)
+            if inline is None:
+                index += 1
+            ku = value.strip()
+            index += 1
+            continue
+        raise CliError(f"未知参数：`{token}`。可用 `-名`、`-ku`。")
+    return name, ku
 
 
 def paginate(
@@ -32,11 +197,39 @@ def paginate(
     return rows[start : start + page_size], current, pages, total
 
 
-def page_hint(command: str, keyword: str, page: int, pages: int, total: int) -> str:
-    if total == 0 or pages <= 1:
+def _show_query(keyword: str) -> str:
+    if not keyword:
         return ""
-    nxt = page + 1 if page < pages else 1
-    target = f"/{command} {nxt}" if not keyword else f"/{command} {keyword} {nxt}"
+    if (
+        _PAGE_NUMBER.fullmatch(keyword)
+        or any(ch.isspace() for ch in keyword)
+        or keyword.startswith("-")
+    ):
+        return f'"{keyword}"'
+    return keyword
+
+
+def page_overflow_text(command: str, query: str, page: int, pages: int) -> str:
+    lines = [
+        "**页码参数溢出**",
+        "",
+        f"没有第 {page} 页（共 {pages} 页）。指令可能写错。",
+    ]
+    if query:
+        lines.append(
+            f"若这个数字是查询内容的一部分，请写成 `/{command} \"{query} {page}\"`。"
+        )
+    else:
+        lines.append(f"若要查询「{page}」本身，请写成 `/{command} \"{page}\"`。")
+    return "\n".join(lines)
+
+
+def page_hint(command: str, keyword: str, page: int, pages: int, total: int) -> str:
+    if total == 0 or pages <= 1 or page >= pages:
+        return ""
+    nxt = page + 1
+    shown = _show_query(keyword)
+    target = f"/{command} -p {nxt}" if not shown else f"/{command} {shown} -p {nxt}"
     return f"第 **{page}/{pages}** 页，共 {total} 条。下一页：`{target}`"
 
 

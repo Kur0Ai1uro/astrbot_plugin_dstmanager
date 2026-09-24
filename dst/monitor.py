@@ -161,7 +161,7 @@ class ServerMonitor:
                     names = "、".join(md_escape(n) for n in missing_ku)
                     sample = missing_ku[0]
                     chunk.append(
-                        f"{names} 尚未录入 KU_。录入：`/饥荒新玩家 {sample} KU_xxxxxxxx`"
+                        f"{names} 尚未录入 KU_。录入：`/饥荒新玩家 \"{sample}\" KU_xxxxxxxx`"
                     )
                 if chunk:
                     chunk.extend(_online_digest(server))

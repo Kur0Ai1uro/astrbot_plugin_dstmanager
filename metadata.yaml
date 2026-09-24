@@ -4,7 +4,7 @@ short_desc: 监测饥荒联机版服务器状态与玩家进出，并检索物�
 desc: |
   通过 Klei 公共大厅轮询自家饥荒联机版（DST）服务器，推送上线/离线和玩家进出；
   支持本服玩家 KU_、物品 prefab、控制台指令检索。不展示 SteamID。
-version: 1.1.0
+version: 1.2.0
 author: Kur0Ai1uro
 repo: https://github.com/Kur0Ai1uro/astrbot_plugin_dstmanager
 astrbot_version: ">=4.0.0"
