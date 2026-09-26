@@ -103,6 +103,22 @@ def _parse_page(value: str) -> int:
     return int(value)
 
 
+def parse_player_admin(text: str) -> tuple[str, str, str] | None:
+    """玩家指令的管理动作。不是时返回 None。否则为 (new|delete|delete-all, 昵称, KU_)。"""
+    tokens = [token for token, _quoted in _tokenize(text)]
+    if not tokens or tokens[0].lower() not in {"--new", "--delete"}:
+        return None
+    action = tokens[0].lower()
+    rest = tokens[1:]
+    if action == "--delete":
+        if len(rest) == 1 and rest[0].lower() == "-a":
+            return "delete-all", "", ""
+        return "delete", " ".join(rest).strip(), ""
+    if len(rest) < 2 or not re.fullmatch(r"KU_[A-Za-z0-9]+", rest[-1], re.I):
+        return "new", "", ""
+    return "new", " ".join(rest[:-1]).strip(), rest[-1]
+
+
 def parse_search_args(text: str) -> tuple[str, int]:
     """返回 (查询内容, 页码)。引号外最后一个半角整数是页码，引号内原样保留。"""
     tokens = _tokenize(text)

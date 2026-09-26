@@ -23,6 +23,7 @@ try:
         page_overflow_text,
         paginate,
         parse_bind_args,
+        parse_player_admin,
         parse_search_args,
     )
     from dst.store import PluginStore
@@ -43,6 +44,7 @@ except ImportError:  # AstrBot 把插件当包加载时
         page_overflow_text,
         paginate,
         parse_bind_args,
+        parse_player_admin,
         parse_search_args,
     )
     from .dst.store import PluginStore
@@ -80,7 +82,8 @@ HELP_MARKDOWN = """**饥荒助手** · `/指令 参数`
 | `/饥荒状态` | 房间状态与当前在线 |
 | `/饥荒玩家` | 全部历史。翻页：`/饥荒玩家 -p 2` |
 | `/饥荒玩家 张三` | 检索。名字含空格或数字时加引号：`/饥荒玩家 "张三 2"` |
-| `/饥荒新玩家 昵称 KU_` | 补全对照。空格昵称加引号 |
+| `/饥荒玩家 --new "名字" KU_` | 补全对照 |
+| `/饥荒玩家 --delete 名字` | 删除一条对照。清空：`--delete -A` |
 | `/饥荒物品 金块` | 物品 prefab。翻页：`/饥荒物品 金块 -p 2` |
 | `/饥荒指令 封禁` | 控制台用法（不执行）。翻页：`/饥荒指令 封禁 -p 2` |
 
@@ -99,7 +102,7 @@ HELP_MARKDOWN = """**饥荒助手** · `/指令 参数`
     "astrbot_plugin_dst",
     "yourname",
     "饥荒联机版助手：大厅监测、玩家进出推送、物品/玩家/指令检索",
-    "1.2.0",
+    "1.2.1",
 )
 class Main(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -256,6 +259,48 @@ class Main(Star):
             ),
         )
 
+    async def _player_admin(self, event: AstrMessageEvent, admin: tuple[str, str, str]):
+        action, name, ku = admin
+        if action == "delete-all":
+            count = await self.store.delete_all_ku_mappings()
+            yield self._md(event, f"**已清空对照**\n\n删除了 {count} 条 `KU_` 对照。进服历史仍保留。")
+            return
+        if action == "delete":
+            if not name:
+                yield self._md(
+                    event,
+                    "**用法**\n\n`/饥荒玩家 --delete 昵称`\n`/饥荒玩家 --delete KU_xxxxxxxx`\n`/饥荒玩家 --delete -A`",
+                )
+                return
+            removed = await self.store.delete_ku_mapping(name)
+            if not removed:
+                yield self._md(event, f"**没有这条对照**\n\n`{name}`")
+                return
+            lines = ["**已删除对照**", "", "| 昵称 | KU_ |", "| --- | --- |"]
+            for mapped_name, mapped_ku in removed:
+                lines.append(f"| {mapped_name.replace('|', '｜')} | `{mapped_ku}` |")
+            yield self._md(event, "\n".join(lines))
+            return
+        if not name or not ku:
+            yield self._md(
+                event,
+                "**用法**\n\n`/饥荒玩家 --new \"昵称\" KU_xxxxxxxx`",
+            )
+            return
+        if not re.fullmatch(r"KU_[A-Za-z0-9]+", ku, re.I):
+            yield self._md(event, f"KU_ID 格式不对：`{ku}`。应类似 `KU_xxxxxxxx`。")
+            return
+        result = await self.store.add_ku_mapping(name, ku)
+        if self.monitor.last_server and self.monitor.last_server.players:
+            self.store.enrich_players(self.monitor.last_server.players)
+        title = {"unchanged": "**已有对照**", "updated": "**已更新**"}.get(
+            result["status"], "**已录入**"
+        )
+        yield self._md(
+            event,
+            f"{title}\n\n| 昵称 | KU_ |\n| --- | --- |\n| {result['name'].replace('|', '｜')} | `{result['ku']}` |",
+        )
+
     @filter.command("饥荒玩家", alias={"dst玩家"})
     async def cmd_player_alias(self, event: AstrMessageEvent, keyword: str = ""):
         """检索本服历史玩家 ID"""
@@ -266,6 +311,15 @@ class Main(Star):
     async def cmd_player(self, event: AstrMessageEvent, keyword: str = ""):
         """按昵称 / KU_ID 查本服历史玩家；不带关键词则列出全部"""
         kw = self._rest_keyword(event, keyword)
+        try:
+            admin = parse_player_admin(kw)
+        except CliError as exc:
+            yield self._md(event, f"**参数错误**\n\n{exc}")
+            return
+        if admin is not None:
+            async for result in self._player_admin(event, admin):
+                yield result
+            return
         try:
             query, page = parse_search_args(kw)
         except CliError as exc:

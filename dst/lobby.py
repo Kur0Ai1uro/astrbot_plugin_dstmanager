@@ -427,7 +427,12 @@ def _player_from_dict(data: dict[str, Any]) -> LobbyPlayer:
         userid, netid = netid, ""
     return LobbyPlayer(
         name=str(data.get("name") or ""),
-        prefab=str(data.get("prefab") or ""),
+        prefab=str(
+            data.get("prefab")
+            or data.get("character")
+            or data.get("lobbycharacter")
+            or ""
+        ),
         netid=netid,
         userid=userid,
         eventlevel=int(data.get("eventlevel") or 0),

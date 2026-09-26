@@ -38,6 +38,7 @@ class ServerMonitor:
         self.last_token_warning = ""
         self.last_ok_at = 0.0
         self.last_extra_matches = 0
+        self._prefab_wait: dict[str, int] = {}
 
     async def poll(self, config: dict[str, Any], client: LobbyClient) -> list[str]:
         name = str(config.get("server_name") or "").strip()
@@ -148,10 +149,11 @@ class ServerMonitor:
 
         skip_join_leave = just_online and bool(config.get("notify_online_offline", True))
         if bool(config.get("notify_join_leave", True)) and not skip_join_leave:
-            if joined or left:
+            notify_join = self._joins_to_notify(joined, incoming, prev)
+            if notify_join or left:
                 chunk: list[str] = []
                 missing_ku: list[str] = []
-                for player in joined:
+                for player in notify_join:
                     chunk.append(_join_leave_line(server, player, joined=True))
                     if not (player.userid or "").startswith("KU_"):
                         missing_ku.append(player.name or "未知")
@@ -187,6 +189,44 @@ class ServerMonitor:
             connected=server.player_count,
         )
         return joined, left, messages
+
+    def _joins_to_notify(
+        self,
+        joined: list[LobbyPlayer],
+        incoming: dict[str, LobbyPlayer],
+        prev: Snapshot,
+    ) -> list[LobbyPlayer]:
+        """大厅刚看到人时 prefab 经常是空的，先等一轮再推送。"""
+        notify: list[LobbyPlayer] = []
+        seen: set[str] = set()
+        for player in joined:
+            if self._announce_join(player):
+                notify.append(player)
+            seen.add(player.key)
+        for key in list(self._prefab_wait):
+            player = incoming.get(key)
+            if player is None:
+                self._prefab_wait.pop(key, None)
+                held = prev.players.get(key)
+                if held is not None:
+                    notify.append(held)
+                continue
+            if key in seen:
+                continue
+            if self._announce_join(player):
+                notify.append(player)
+        return notify
+
+    def _announce_join(self, player: LobbyPlayer) -> bool:
+        if (player.prefab or "").strip():
+            self._prefab_wait.pop(player.key, None)
+            return True
+        waits = self._prefab_wait.get(player.key, 0)
+        if waits >= 1:
+            self._prefab_wait.pop(player.key, None)
+            return True
+        self._prefab_wait[player.key] = waits + 1
+        return False
 
 
 def md_escape(text: str) -> str:

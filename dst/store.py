@@ -195,6 +195,35 @@ class PluginStore:
             status = "added"
         return {"status": status, "name": name, "ku": ku, "old_ku": old}
 
+    async def delete_ku_mapping(self, target: str) -> list[tuple[str, str]]:
+        """按昵称或 KU_ 删除对照。返回被删掉的 (昵称, KU_) 列表。"""
+        target = (target or "").strip()
+        if not target:
+            return []
+        async with self._lock:
+            removed: list[tuple[str, str]] = []
+            if target.upper().startswith("KU_"):
+                ku = "KU_" + target[3:]
+                names = [name for name, mapped in self.ku_by_name.items() if mapped == ku]
+            else:
+                names = [
+                    name
+                    for name in self.ku_by_name
+                    if name == target or name.lower() == target.lower()
+                ]
+            for name in names:
+                removed.append((name, self.ku_by_name.pop(name)))
+            if removed:
+                self._write_player_txt()
+            return removed
+
+    async def delete_all_ku_mappings(self) -> int:
+        async with self._lock:
+            count = len(self.ku_by_name)
+            self.ku_by_name.clear()
+            self._write_player_txt()
+            return count
+
     def lookup_ku(self, name: str) -> str:
         key = (name or "").strip()
         if not key:
