@@ -106,7 +106,7 @@ class PluginStore:
             except OSError as exc:
                 logger.warning(f"读取 {path} 失败：{exc}")
                 continue
-            count = 0
+            loaded: list[tuple[str, str]] = []
             for raw in text.splitlines():
                 line = raw.strip()
                 if not line or line.startswith("#"):
@@ -116,10 +116,19 @@ class PluginStore:
                     continue
                 ku, name = match.group(1), match.group(2).strip()
                 if name:
-                    self.ku_by_name[name] = ku
-                    count += 1
-            if count:
-                logger.info(f"已从 {path.name} 载入 {count} 条 KU_ 对照")
+                    loaded.append((name, ku))
+            if not loaded:
+                continue
+            by_ku: dict[str, str] = {}
+            for name, ku in loaded:
+                by_ku[ku] = name
+            for old_name, old_ku in list(self.ku_by_name.items()):
+                if old_ku in by_ku and old_name != by_ku[old_ku]:
+                    self.ku_by_name.pop(old_name, None)
+            for ku, name in by_ku.items():
+                self._drop_ku_names(ku, keep=name)
+                self.ku_by_name[name] = ku
+            logger.info(f"已从 {path.name} 载入 {len(by_ku)} 条 KU_ 对照")
 
     def _write_player_txt(self) -> None:
         path = self._dir / "player.txt"
@@ -132,13 +141,36 @@ class PluginStore:
                         ordered.append(match.group(2).strip())
             except OSError as exc:
                 logger.warning(f"读取 {path} 失败：{exc}")
-        names = list(dict.fromkeys([*ordered, *self.ku_by_name.keys()]))
-        lines = [
-            f"{self.ku_by_name[name]}={name}"
-            for name in names
-            if name and self.ku_by_name.get(name)
-        ]
+        by_ku: dict[str, str] = {}
+        for name in [*ordered, *self.ku_by_name.keys()]:
+            ku = self.ku_by_name.get(name)
+            if name and ku:
+                by_ku[ku] = name
+        lines = [f"{ku}={name}" for ku, name in by_ku.items()]
         path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+        self.ku_by_name = {name: ku for ku, name in by_ku.items()}
+
+    def _drop_ku_names(self, ku: str, keep: str) -> list[str]:
+        removed = [
+            name
+            for name, mapped in self.ku_by_name.items()
+            if mapped == ku and name != keep
+        ]
+        for name in removed:
+            self.ku_by_name.pop(name, None)
+        return removed
+
+    def _assign_ku(self, name: str, ku: str) -> list[str]:
+        """同一 KU_ 只保留这次的昵称。返回被替换掉的旧昵称。"""
+        name = (name or "").strip()
+        ku = (ku or "").strip()
+        if ku.upper().startswith("KU_"):
+            ku = "KU_" + ku[3:]
+        if not name or not ku.startswith("KU_"):
+            return []
+        removed = self._drop_ku_names(ku, keep=name)
+        self.ku_by_name[name] = ku
+        return removed
 
     async def add_ku_mapping(self, name: str, ku: str) -> dict[str, str]:
         name = (name or "").strip()
@@ -147,7 +179,7 @@ class PluginStore:
             ku = "KU_" + ku[3:]
         old = self.lookup_ku(name)
         async with self._lock:
-            self.ku_by_name[name] = ku
+            replaced = self._assign_ku(name, ku)
             self._write_player_txt()
             now = _now_iso()
             row = None
@@ -193,7 +225,13 @@ class PluginStore:
             status = "updated"
         else:
             status = "added"
-        return {"status": status, "name": name, "ku": ku, "old_ku": old}
+        return {
+            "status": status,
+            "name": name,
+            "ku": ku,
+            "old_ku": old,
+            "replaced_names": replaced,
+        }
 
     async def delete_ku_mapping(self, target: str) -> list[tuple[str, str]]:
         """按昵称或 KU_ 删除对照。返回被删掉的 (昵称, KU_) 列表。"""
@@ -239,8 +277,8 @@ class PluginStore:
     def enrich_players(self, players: list[LobbyPlayer]) -> list[LobbyPlayer]:
         for player in players:
             if player.userid and player.userid.startswith("KU_"):
-                if player.name:
-                    self.ku_by_name[player.name] = player.userid
+                if player.name and self._assign_ku(player.name, player.userid):
+                    self._write_player_txt()
                 continue
             ku = self.lookup_ku(player.name)
             if ku:
@@ -254,7 +292,8 @@ class PluginStore:
             if userid.startswith("KU_"):
                 name = str(row.get("name") or "")
                 if name:
-                    self.ku_by_name[name] = userid
+                    self._assign_ku(name, userid)
+                    changed = True
                 continue
             ku = ""
             for name in [row.get("name"), *(row.get("names") or [])]:
@@ -266,6 +305,7 @@ class PluginStore:
                 changed = True
         if changed:
             try:
+                self._write_player_txt()
                 self._players_path.write_text(
                     json.dumps(self.players, ensure_ascii=False, indent=2),
                     encoding="utf-8",
@@ -317,8 +357,9 @@ class PluginStore:
                     or ""
                 )
                 row["netid"] = player.netid or row.get("netid") or ""
-                if player.name and row["userid"].startswith("KU_"):
-                    self.ku_by_name[player.name] = row["userid"]
+                if player.name and str(row.get("userid") or "").startswith("KU_"):
+                    if self._assign_ku(player.name, str(row["userid"])):
+                        changed = True
                 row["prefab"] = player.prefab or row.get("prefab") or ""
                 row["last_seen"] = now
                 old_key = str(row.get("key") or "")
@@ -328,7 +369,23 @@ class PluginStore:
                     self.players.pop(old_key, None)
                 changed = True
             if changed:
+                self._write_player_txt()
                 await self._write_json(self._players_path, self.players)
+
+    def adopt_rename(self, player: LobbyPlayer) -> str:
+        """同一网号或 KU_ 换了昵称时，对照改成新名字。返回旧昵称。"""
+        row = self._find_row(player)
+        if row is None:
+            return ""
+        ku = str(row.get("userid") or player.userid or "")
+        old = str(row.get("name") or "").strip()
+        new = (player.name or "").strip()
+        if not new or not old or new == old or not ku.startswith("KU_"):
+            return ""
+        player.userid = ku
+        self._assign_ku(new, ku)
+        self._write_player_txt()
+        return old
 
     def _find_row(self, player: LobbyPlayer) -> dict[str, Any] | None:
         if player.userid:

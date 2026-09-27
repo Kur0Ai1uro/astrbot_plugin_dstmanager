@@ -147,6 +147,27 @@ class ServerMonitor:
             appear.extend(_online_digest(server))
             messages.append("\n".join(appear))
 
+        renames: list[tuple[str, str]] = []
+        prev_by_net = {
+            player.netid: player for player in prev.players.values() if player.netid
+        }
+        for player in incoming.values():
+            previous = prev.players.get(player.key) or prev_by_net.get(player.netid)
+            if not previous or not previous.name or not player.name:
+                continue
+            if previous.name == player.name:
+                continue
+            old = self.store.adopt_rename(player) or previous.name
+            if old and old != player.name:
+                renames.append((old, player.name))
+        if renames and bool(config.get("notify_join_leave", True)) and not just_online:
+            messages.append(
+                "\n".join(
+                    f"**[饥荒]** {md_escape(new)} **已改名**（{md_escape(old)} → {md_escape(new)}）"
+                    for old, new in renames
+                )
+            )
+
         skip_join_leave = just_online and bool(config.get("notify_online_offline", True))
         if bool(config.get("notify_join_leave", True)) and not skip_join_leave:
             notify_join = self._joins_to_notify(joined, incoming, prev)
@@ -365,8 +386,7 @@ def format_player_rows(
         return f"{title}\n{empty}"
     table_rows: list[list[str]] = []
     for i, row in enumerate(rows, start):
-        names = row.get("names") or [row.get("name")]
-        name_text = " / ".join(str(x) for x in names if x)
+        name_text = str(row.get("name") or "").strip()
         ku = str(row.get("userid") or "")
         ku_cell = f"`{_md_cell(ku)}`" if ku.startswith("KU_") else "-"
         table_rows.append(
@@ -387,6 +407,67 @@ def format_player_rows(
             ["---:", "---", "---", "---", "---:", "---"],
         )
     )
+
+
+def _row_names(row: dict[str, Any]) -> list[str]:
+    names: list[str] = []
+    seen: set[str] = set()
+    for raw in [row.get("name"), *(row.get("names") or [])]:
+        text = str(raw or "").strip()
+        key = text.lower()
+        if not text or key in seen:
+            continue
+        seen.add(key)
+        names.append(text)
+    return names
+
+
+def _row_identity(row: dict[str, Any]) -> str:
+    return str(row.get("userid") or row.get("netid") or row.get("key") or id(row))
+
+
+def format_name_collisions(
+    matched: list[dict[str, Any]], everyone: list[dict[str, Any]]
+) -> str:
+    """查询结果里的昵称若还对应其他玩家，标明这些不是同一个人。"""
+    if not matched:
+        return ""
+    interesting = {name.lower() for row in matched for name in _row_names(row)}
+    grouped: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+    for row in everyone:
+        seen_in_row: set[str] = set()
+        for name in _row_names(row):
+            key = name.lower()
+            if key not in interesting or key in seen_in_row:
+                continue
+            seen_in_row.add(key)
+            grouped.setdefault(key, []).append((name, row))
+    lines: list[str] = []
+    for items in grouped.values():
+        unique: list[tuple[str, dict[str, Any]]] = []
+        seen_ids: set[str] = set()
+        for name, row in items:
+            identity = _row_identity(row)
+            if identity in seen_ids:
+                continue
+            seen_ids.add(identity)
+            unique.append((name, row))
+        if len(unique) < 2:
+            continue
+        display = unique[0][0]
+        lines.append(
+            f"**重名** `{md_escape(display)}` 对应 {len(unique)} 个不同玩家，不是同一个人。"
+        )
+        for _name, row in unique:
+            ku = str(row.get("userid") or "")
+            ku_text = f"`{md_escape(ku)}`" if ku.startswith("KU_") else "无 KU_"
+            lines.append(
+                f"- {ku_text}  上次见到 {md_escape(format_local_time(str(row.get('last_seen') or '')))}"
+            )
+        lines.append("请用 `KU_` 区分，例如 `/饥荒玩家 KU_xxxxxxxx`。")
+    if not lines:
+        return ""
+    return "\n\n" + "\n".join(lines)
 
 
 def format_items(

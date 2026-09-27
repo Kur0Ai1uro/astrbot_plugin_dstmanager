@@ -12,6 +12,7 @@ try:
         ServerMonitor,
         format_commands,
         format_items,
+        format_name_collisions,
         format_player_rows,
         format_status,
     )
@@ -33,6 +34,7 @@ except ImportError:  # AstrBot 把插件当包加载时
         ServerMonitor,
         format_commands,
         format_items,
+        format_name_collisions,
         format_player_rows,
         format_status,
     )
@@ -81,7 +83,7 @@ HELP_MARKDOWN = """**饥荒助手** · `/指令 参数`
 | `/饥荒帮助` | 本说明 |
 | `/饥荒状态` | 房间状态与当前在线 |
 | `/饥荒玩家` | 全部历史。翻页：`/饥荒玩家 -p 2` |
-| `/饥荒玩家 张三` | 检索。名字含空格或数字时加引号：`/饥荒玩家 "张三 2"` |
+| `/饥荒玩家 张三` | 检索。重名会列出不同 `KU_`。空格或数字加引号 |
 | `/饥荒玩家 --new "名字" KU_` | 补全对照 |
 | `/饥荒玩家 --delete 名字` | 删除一条对照。清空：`--delete -A` |
 | `/饥荒物品 金块` | 物品 prefab。翻页：`/饥荒物品 金块 -p 2` |
@@ -102,7 +104,7 @@ HELP_MARKDOWN = """**饥荒助手** · `/指令 参数`
     "astrbot_plugin_dst",
     "yourname",
     "饥荒联机版助手：大厅监测、玩家进出推送、物品/玩家/指令检索",
-    "1.2.1",
+    "1.2.2",
 )
 class Main(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -296,9 +298,13 @@ class Main(Star):
         title = {"unchanged": "**已有对照**", "updated": "**已更新**"}.get(
             result["status"], "**已录入**"
         )
+        extra = ""
+        replaced = [str(item) for item in result.get("replaced_names") or [] if item]
+        if replaced:
+            extra = "\n\n已去掉旧昵称：" + "、".join(replaced)
         yield self._md(
             event,
-            f"{title}\n\n| 昵称 | KU_ |\n| --- | --- |\n| {result['name'].replace('|', '｜')} | `{result['ku']}` |",
+            f"{title}\n\n| 昵称 | KU_ |\n| --- | --- |\n| {result['name'].replace('|', '｜')} | `{result['ku']}` |{extra}",
         )
 
     @filter.command("饥荒玩家", alias={"dst玩家"})
@@ -333,6 +339,7 @@ class Main(Star):
         page_rows, page, pages, total = paginate(source, page)
         start = (page - 1) * PAGE_SIZE + 1
         text = format_player_rows(page_rows, query, start=start, listing=not query)
+        text += format_name_collisions(source, self.store.list_players())
         hint = page_hint("饥荒玩家", query, page, pages, total)
         yield self._md(event, f"{text}\n\n{hint}" if hint else text)
 
