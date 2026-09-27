@@ -410,36 +410,22 @@ class PluginStore:
         return rows
 
     def search_players(self, keyword: str) -> list[dict[str, Any]]:
-        q = keyword.strip().lower()
+        from .search import _score_text
+
+        q = keyword.strip()
         if not q:
             return []
         scored: list[tuple[int, dict[str, Any]]] = []
         for row in self.players.values():
             if not _shown_in_history(row):
                 continue
-            blob = " ".join(
-                [
-                    str(row.get("name") or ""),
-                    " ".join(row.get("names") or []),
-                    str(row.get("userid") or ""),
-                    str(row.get("netid") or ""),
-                    str(row.get("key") or ""),
-                ]
-            ).lower()
-            if q not in blob:
+            score = _score_text(q, str(row.get("userid") or ""), fuzzy=False)
+            for name in [row.get("name"), *(row.get("names") or [])]:
+                score = max(score, _score_text(q, str(name or ""), fuzzy=True))
+            if score <= 0:
                 continue
-            score = 0
-            if str(row.get("userid") or "").lower() == q:
-                score += 100
-            if str(row.get("netid") or "").lower() == q:
-                score += 90
-            if str(row.get("name") or "").lower() == q:
-                score += 80
-            if str(row.get("name") or "").lower().startswith(q):
-                score += 20
             score += min(int(row.get("join_count") or 0), 20)
             scored.append((score, row))
-        scored.sort(key=lambda x: (-x[0], str(x[1].get("last_seen") or "")), reverse=False)
         scored.sort(key=lambda x: x[0], reverse=True)
         return [row for _, row in scored]
 
