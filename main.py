@@ -104,7 +104,7 @@ HELP_MARKDOWN = """**饥荒助手** · `/指令 参数`
     "astrbot_plugin_dst",
     "yourname",
     "饥荒联机版助手：大厅监测、玩家进出推送、物品/玩家/指令检索",
-    "1.2.2",
+    "1.2.3",
 )
 class Main(Star):
     def __init__(self, context: Context, config: AstrBotConfig):

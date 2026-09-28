@@ -6,7 +6,7 @@
 
 不需要在游戏里加模组，机器人和游戏服务器也不必在同一台机器。
 
-当前版本 **1.2.2**。更早的变更见 [CHANGELOG.md](CHANGELOG.md)。
+当前版本 **1.2.3**。更早的变更见 [CHANGELOG.md](CHANGELOG.md)。
 
 - 需要 **AstrBot ≥ 4.0.0**
 - 依赖：`aiohttp>=3.9.0`（见 `requirements.txt`）
