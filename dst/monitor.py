@@ -148,25 +148,36 @@ class ServerMonitor:
             messages.append("\n".join(appear))
 
         renames: list[tuple[str, str]] = []
+        swaps: list[tuple[str, str, str]] = []
         prev_by_net = {
             player.netid: player for player in prev.players.values() if player.netid
         }
         for player in incoming.values():
             previous = prev.players.get(player.key) or prev_by_net.get(player.netid)
-            if not previous or not previous.name or not player.name:
+            if not previous or not player.name:
                 continue
-            if previous.name == player.name:
-                continue
-            old = self.store.adopt_rename(player) or previous.name
-            if old and old != player.name:
-                renames.append((old, player.name))
-        if renames and bool(config.get("notify_join_leave", True)) and not just_online:
-            messages.append(
-                "\n".join(
-                    f"**[饥荒]** {md_escape(new)} **已改名**（{md_escape(old)} → {md_escape(new)}）"
-                    for old, new in renames
+            if previous.name and previous.name != player.name:
+                old = self.store.adopt_rename(player) or previous.name
+                if old and old != player.name:
+                    renames.append((old, player.name))
+            old_prefab = (previous.prefab or "").strip()
+            new_prefab = (player.prefab or "").strip()
+            if old_prefab and new_prefab and old_prefab.lower() != new_prefab.lower():
+                swaps.append(
+                    (player.name, character_name(old_prefab), character_name(new_prefab))
                 )
+        if not just_online and bool(config.get("notify_join_leave", True)):
+            lines: list[str] = []
+            lines.extend(
+                f"**[饥荒]** {md_escape(new)} **已改名**（{md_escape(old)} → {md_escape(new)}）"
+                for old, new in renames
             )
+            lines.extend(
+                f"**[饥荒]** {md_escape(name)} **已更换角色**（{md_escape(old)} → {md_escape(new)}）"
+                for name, old, new in swaps
+            )
+            if lines:
+                messages.append("\n".join(lines))
 
         skip_join_leave = just_online and bool(config.get("notify_online_offline", True))
         if bool(config.get("notify_join_leave", True)) and not skip_join_leave:
