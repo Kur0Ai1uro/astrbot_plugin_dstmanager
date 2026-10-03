@@ -359,10 +359,25 @@ def parse_players(raw: Any) -> list[LobbyPlayer]:
         return []
     if isinstance(data, dict):
         values = list(data.values()) if _looks_like_array_table(data) else [data]
-        return [_player_from_dict(v) for v in values if isinstance(v, dict)]
-    if isinstance(data, list):
-        return [_player_from_dict(v) for v in data if isinstance(v, dict)]
-    return []
+        parsed = [_player_from_dict(v) for v in values if isinstance(v, dict)]
+    elif isinstance(data, list):
+        parsed = [_player_from_dict(v) for v in data if isinstance(v, dict)]
+    else:
+        parsed = []
+    return _fill_missing_prefabs(text, parsed)
+
+
+def _fill_missing_prefabs(text: str, players: list[LobbyPlayer]) -> list[LobbyPlayer]:
+    if not players or any((player.prefab or "").strip() for player in players):
+        return players
+    fallback = _players_from_regex(text)
+    by_name = {player.name: player.prefab for player in fallback if player.name and player.prefab}
+    if not by_name:
+        return players
+    for player in players:
+        if not (player.prefab or "").strip():
+            player.prefab = by_name.get(player.name, "")
+    return players
 
 
 def parse_world_data(raw: Any) -> dict[str, Any]:
@@ -473,8 +488,14 @@ def _players_from_regex(text: str) -> list[LobbyPlayer]:
 
 
 def _re_field(block: str, key: str) -> str:
-    match = re.search(rf'{key}\s*=\s*"([^"]*)"', block)
-    return match.group(1) if match else ""
+    quoted = re.search(rf'{key}\s*=\s*"([^"]*)"', block)
+    if quoted:
+        return quoted.group(1)
+    quoted = re.search(rf"{key}\s*=\s*'([^']*)'", block)
+    if quoted:
+        return quoted.group(1)
+    bare = re.search(rf"{key}\s*=\s*([A-Za-z_][\w]*)", block)
+    return bare.group(1) if bare else ""
 
 
 def _decode_maybe_gzip(raw: bytes) -> str:

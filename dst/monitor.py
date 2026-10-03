@@ -8,7 +8,7 @@ from typing import Any
 
 from astrbot.api import logger
 
-from .i18n import character_name, intent_name, mode_name, season_name
+from .i18n import character_name, season_name, status_mode_intent
 from .lobby import (
     LobbyClient,
     LobbyError,
@@ -38,7 +38,6 @@ class ServerMonitor:
         self.last_token_warning = ""
         self.last_ok_at = 0.0
         self.last_extra_matches = 0
-        self._prefab_wait: dict[str, int] = {}
 
     async def poll(self, config: dict[str, Any], client: LobbyClient) -> list[str]:
         name = str(config.get("server_name") or "").strip()
@@ -162,9 +161,13 @@ class ServerMonitor:
                     renames.append((old, player.name))
             old_prefab = (previous.prefab or "").strip()
             new_prefab = (player.prefab or "").strip()
-            if old_prefab and new_prefab and old_prefab.lower() != new_prefab.lower():
+            if new_prefab and old_prefab.lower() != new_prefab.lower():
                 swaps.append(
-                    (player.name, character_name(old_prefab), character_name(new_prefab))
+                    (
+                        player.name,
+                        character_name(old_prefab),
+                        character_name(new_prefab),
+                    )
                 )
         if not just_online and bool(config.get("notify_join_leave", True)):
             lines: list[str] = []
@@ -181,11 +184,10 @@ class ServerMonitor:
 
         skip_join_leave = just_online and bool(config.get("notify_online_offline", True))
         if bool(config.get("notify_join_leave", True)) and not skip_join_leave:
-            notify_join = self._joins_to_notify(joined, incoming, prev)
-            if notify_join or left:
+            if joined or left:
                 chunk: list[str] = []
                 missing_ku: list[str] = []
-                for player in notify_join:
+                for player in joined:
                     chunk.append(_join_leave_line(server, player, joined=True))
                     if not (player.userid or "").startswith("KU_"):
                         missing_ku.append(player.name or "未知")
@@ -221,44 +223,6 @@ class ServerMonitor:
             connected=server.player_count,
         )
         return joined, left, messages
-
-    def _joins_to_notify(
-        self,
-        joined: list[LobbyPlayer],
-        incoming: dict[str, LobbyPlayer],
-        prev: Snapshot,
-    ) -> list[LobbyPlayer]:
-        """大厅刚看到人时 prefab 经常是空的，先等一轮再推送。"""
-        notify: list[LobbyPlayer] = []
-        seen: set[str] = set()
-        for player in joined:
-            if self._announce_join(player):
-                notify.append(player)
-            seen.add(player.key)
-        for key in list(self._prefab_wait):
-            player = incoming.get(key)
-            if player is None:
-                self._prefab_wait.pop(key, None)
-                held = prev.players.get(key)
-                if held is not None:
-                    notify.append(held)
-                continue
-            if key in seen:
-                continue
-            if self._announce_join(player):
-                notify.append(player)
-        return notify
-
-    def _announce_join(self, player: LobbyPlayer) -> bool:
-        if (player.prefab or "").strip():
-            self._prefab_wait.pop(player.key, None)
-            return True
-        waits = self._prefab_wait.get(player.key, 0)
-        if waits >= 1:
-            self._prefab_wait.pop(player.key, None)
-            return True
-        self._prefab_wait[player.key] = waits + 1
-        return False
 
 
 def md_escape(text: str) -> str:
@@ -344,20 +308,18 @@ def format_status(
         return f"**饥荒状态**\n\n{md_escape(error or '还没有查到服务器。')}"
 
     progress = _day_suffix(server).strip("（）") or "-"
+    shown_mode, shown_intent = status_mode_intent(server.mode, server.intent)
+    headers = ["模式"]
+    cells = [_md_cell(shown_mode)]
+    if shown_intent:
+        headers.append("倾向")
+        cells.append(_md_cell(shown_intent))
+    headers.extend(["季节", "进度"])
+    cells.extend([_md_cell(season_name(server.season)), _md_cell(progress)])
     lines = [
         f"**{md_escape(server.name)}** · {server.player_count}/{server.max_connections or '?'}",
         "",
-        _md_table(
-            ["模式", "倾向", "季节", "进度"],
-            [
-                [
-                    _md_cell(mode_name(server.mode)),
-                    _md_cell(intent_name(server.intent)),
-                    _md_cell(season_name(server.season)),
-                    _md_cell(progress),
-                ]
-            ],
-        ),
+        _md_table(headers, [cells]),
     ]
     flags: list[str] = []
     if server.paused:

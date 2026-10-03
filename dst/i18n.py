@@ -66,3 +66,15 @@ def mode_name(mode: str) -> str:
 def intent_name(intent: str) -> str:
     key = (intent or "").strip().lower()
     return INTENTS.get(key, intent or "未知")
+
+
+def status_mode_intent(mode: str, intent: str) -> tuple[str, str]:
+    """新版本大厅把无尽/生存/荒野放在 intent，mode 多半只是 survival。"""
+    mode_key = (mode or "").strip().lower()
+    intent_key = (intent or "").strip().lower()
+    if intent_key in MODES:
+        shown = mode_name(intent_key)
+        if mode_key in INTENTS and mode_key != intent_key:
+            return shown, intent_name(mode_key)
+        return shown, ""
+    return mode_name(mode_key), intent_name(intent_key)
